@@ -33,7 +33,7 @@ from sklearn.model_selection import StratifiedKFold, cross_val_score, train_test
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
-from fraud_lib.data import generate_claims, to_model_matrix
+from fraud_lib.data import get_claims_with_status, to_model_matrix
 
 
 @dataclass
@@ -54,6 +54,8 @@ class TrainedBundle:
     train_means: pd.Series
     train_stds: pd.Series
     perm_importance: pd.Series
+    data_status: dict
+    df: pd.DataFrame
 
 
 def _candidate_models() -> dict:
@@ -63,14 +65,15 @@ def _candidate_models() -> dict:
             ("clf", LogisticRegression(max_iter=1000, class_weight="balanced", random_state=42)),
         ]),
         "random_forest": RandomForestClassifier(
-            n_estimators=300, max_depth=6, min_samples_leaf=15,
-            random_state=42, class_weight="balanced",
+            n_estimators=150, max_depth=5, min_samples_leaf=15,
+            random_state=42, class_weight="balanced", n_jobs=-1,
         ),
     }
 
 
-def train_and_select(n: int = 4000, seed: int = 42, cv_folds: int = 5) -> TrainedBundle:
-    df = generate_claims(n=n, seed=seed)
+def train_and_select(n: int = 4000, seed: int = 42, cv_folds: int = 3,
+                      prefer_real: bool = True) -> TrainedBundle:
+    df, data_status = get_claims_with_status(prefer_real=prefer_real)
     X, y = to_model_matrix(df)
     feature_columns = list(X.columns)
 
@@ -98,13 +101,14 @@ def train_and_select(n: int = 4000, seed: int = 42, cv_folds: int = 5) -> Traine
     # touching the discrimination (AUC is rank-based, unaffected by
     # monotonic calibration; Brier score, which does care about calibration,
     # is reported before/after so the fix is verifiable, not just claimed).
-    calibrated_model = CalibratedClassifierCV(best_model, method="isotonic", cv=5)
+    calibrated_model = CalibratedClassifierCV(best_model, method="isotonic", cv=3)
     calibrated_model.fit(X_train, y_train)
     proba_test = calibrated_model.predict_proba(X_test)[:, 1]
     brier = brier_score_loss(y_test, proba_test)
 
     perm = permutation_importance(
-        calibrated_model, X_test, y_test, n_repeats=20, random_state=seed, scoring="roc_auc"
+        calibrated_model, X_test, y_test, n_repeats=5, random_state=seed,
+        scoring="roc_auc", n_jobs=-1,
     )
     perm_importance = pd.Series(perm.importances_mean, index=feature_columns).sort_values(ascending=False)
 
@@ -122,6 +126,8 @@ def train_and_select(n: int = 4000, seed: int = 42, cv_folds: int = 5) -> Traine
         train_means=X_train.mean(),
         train_stds=X_train.std().replace(0, 1),
         perm_importance=perm_importance,
+        data_status=data_status,
+        df=df,
     )
 
 
@@ -167,15 +173,21 @@ def calibration_points(y_true, proba, n_bins: int = 10):
 
 
 def build_input_row(inputs: dict, feature_columns: list) -> pd.DataFrame:
+    """Generic: works for any numeric + one-hot-encoded categorical schema.
+    `inputs` maps raw column name -> raw value (numbers as-is, categories as
+    their string value, e.g. {'age': 34, 'incident_severity': 'Major Damage'}).
+    """
     row = {c: 0 for c in feature_columns}
-    for k in ["claim_amount", "policy_value", "policy_tenure_years",
-              "prior_claims_count", "reported_delay_days",
-              "weekend_incident", "has_prior_fraud_flag"]:
-        row[k] = inputs[k]
-    row["claim_to_policy_ratio"] = inputs["claim_amount"] / inputs["policy_value"]
-    dummy_col = f"claim_type_{inputs['claim_type']}"
-    if dummy_col in row:
-        row[dummy_col] = 1
+    for key, value in inputs.items():
+        if key in row:
+            row[key] = value  # numeric feature, passthrough
+        else:
+            dummy_col = f"{key}_{value}"
+            if dummy_col in row:
+                row[dummy_col] = 1
+            # else: category not seen in training (e.g. "Unknown") — the
+            # row simply stays at the reference (all-dummies-zero) level,
+            # which is the standard, correct one-hot behaviour.
     return pd.DataFrame([row])[feature_columns]
 
 
