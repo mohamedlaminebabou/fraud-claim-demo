@@ -5,6 +5,7 @@ from fraud_lib.model import (
     build_input_row,
     local_explanation,
     optimal_threshold,
+    plain_language_explanation,
     train_and_select,
 )
 
@@ -98,3 +99,30 @@ def test_local_explanation_returns_requested_top_n(bundle):
     row = build_input_row(SAMPLE_INPUT, bundle.feature_columns)
     expl = local_explanation(row.iloc[0], bundle.train_means, bundle.train_stds, bundle.perm_importance, top_n=4)
     assert len(expl) == 4
+
+
+def test_plain_language_explanation_returns_nonempty_sentence(bundle):
+    row = build_input_row(SAMPLE_INPUT, bundle.feature_columns)
+    text = plain_language_explanation(row.iloc[0], bundle.train_means, bundle.train_stds,
+                                       bundle.perm_importance, is_flagged=True)
+    assert isinstance(text, str) and len(text) > 20
+    assert "flagged for manual review" in text
+
+
+def test_plain_language_explanation_not_flagged_wording(bundle):
+    row = build_input_row(SAMPLE_INPUT, bundle.feature_columns)
+    text = plain_language_explanation(row.iloc[0], bundle.train_means, bundle.train_stds,
+                                       bundle.perm_importance, is_flagged=False)
+    assert "does not meet the threshold" in text or "looks typical" in text
+
+
+def test_plain_language_explanation_only_cites_true_categories(bundle):
+    # Regression test for a real bug found during development: a one-hot
+    # dummy column must never be cited unless its value is actually 1 for
+    # this row, otherwise the sentence states a category that doesn't apply.
+    row = build_input_row(SAMPLE_INPUT, bundle.feature_columns)
+    text = plain_language_explanation(row.iloc[0], bundle.train_means, bundle.train_stds,
+                                       bundle.perm_importance, is_flagged=True)
+    # SAMPLE_INPUT sets police_report_available="NO" — the sentence must not
+    # claim it is "YES" even if that dummy has a large raw coefficient.
+    assert "police report available is \u2018YES\u2019" not in text.lower()

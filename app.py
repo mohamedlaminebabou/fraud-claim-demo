@@ -23,6 +23,7 @@ from fraud_lib.model import (
     calibration_points,
     local_explanation,
     optimal_threshold,
+    plain_language_explanation,
     train_and_select,
 )
 
@@ -333,19 +334,34 @@ with tab1:
     with col_b:
         st.markdown('<div class="card">', unsafe_allow_html=True)
         st.markdown("#### Why this score")
+        plain_text = plain_language_explanation(
+            X_new.iloc[0], bundle.train_means, bundle.train_stds, bundle.perm_importance,
+            is_flagged=(proba >= threshold),
+        )
         st.markdown(
-            "<p class='subtle'>Deviation from the training-set average, weighted by "
-            "permutation importance — an honest approximation, not a SHAP attribution "
-            "(see Scope &amp; decisions).</p>",
+            f"<p style='font-size:1.02rem; line-height:1.55;'>{plain_text}</p>",
             unsafe_allow_html=True,
         )
-        expl = local_explanation(X_new.iloc[0], bundle.train_means, bundle.train_stds, bundle.perm_importance)
-        fig = go.Figure(go.Bar(
-            x=expl.values[::-1], y=expl.index[::-1], orientation="h",
-            marker_color=[RED if v > 0 else BLUE for v in expl.values[::-1]],
-        ))
-        fig.update_layout(height=300, xaxis_title="push toward fraud (red) / away (blue)", **PLOTLY_LAYOUT)
-        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+        st.markdown(
+            "<p class='subtle'>Written from the same numbers as the technical view below "
+            "— nothing here is invented, only relabelled and put into a sentence "
+            "(see Scope &amp; decisions for why this was changed).</p>",
+            unsafe_allow_html=True,
+        )
+        with st.expander("Technical view (for data scientists / audit)"):
+            st.markdown(
+                "<p class='subtle'>Deviation from the training-set average, weighted by "
+                "permutation importance — an honest approximation, not a SHAP attribution "
+                "(see Scope &amp; decisions).</p>",
+                unsafe_allow_html=True,
+            )
+            expl = local_explanation(X_new.iloc[0], bundle.train_means, bundle.train_stds, bundle.perm_importance)
+            fig = go.Figure(go.Bar(
+                x=expl.values[::-1], y=expl.index[::-1], orientation="h",
+                marker_color=[RED if v > 0 else BLUE for v in expl.values[::-1]],
+            ))
+            fig.update_layout(height=280, xaxis_title="push toward fraud (red) / away (blue)", **PLOTLY_LAYOUT)
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
         st.markdown('</div>', unsafe_allow_html=True)
 
 # ---- TAB 2 : model & data ---------------------------------------------------
@@ -560,8 +576,14 @@ the remainder (capital gains/loss, occupation, relationship, policy/incident sta
 fixed at the loaded dataset's median/mode to keep the form usable — full set trained on
 and shown in Model & data.
 
-**Explainability: proportionate to scope.** Permutation importance (global) and an
-importance-weighted deviation from the mean (local) — not SHAP; see below.
+**Explainability: proportionate to scope, and readable by its real audience.**
+Permutation importance (global) and an importance-weighted deviation from the mean
+(local) feed two different outputs: a technical chart (tucked in an expander, for data
+scientists and audit) and a plain-English sentence (the default view). A claims handler
+cannot act on a bar chart of feature contributions — the sentence is generated
+deterministically from the exact same numbers, not by an LLM, so nothing in it is
+invented. This was a direct correction after review feedback that the original
+chart-only view didn't serve its actual reader.
             """
         )
         st.markdown('</div>', unsafe_allow_html=True)

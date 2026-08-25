@@ -44,10 +44,13 @@ the source — flagged here rather than glossed over.
 - **Pick the threshold from business costs, not from habit.** The operating threshold
   minimizes expected cost (false-alarm review cost vs. missed-fraud payout cost) subject
   to a review-capacity constraint, instead of a bare 0.5 cutoff.
-- **Explain with the right tool for a demo.** Global importance uses permutation
-  importance on the held-out test set (model-agnostic). The per-claim explanation is an
-  importance-weighted deviation from the training mean — labelled as an approximation,
-  not SHAP.
+- **Explain with the right tool for the right reader.** Global importance uses
+  permutation importance on the held-out test set (model-agnostic). The per-claim
+  explanation is generated in two layers: the raw importance-weighted deviation feeds a
+  technical chart (for data scientists / audit, tucked in an expander) AND a
+  deterministic, template-filled plain-English sentence (the default view, written for a
+  claims handler who has never seen a feature-importance chart). Both come from the exact
+  same numbers — nothing is invented, only relabelled and assembled into a sentence.
 - **Fail safe and say so.** The real-data fetch is wrapped end-to-end; any failure falls
   back to synthetic data and the UI states exactly what happened, never a silent switch.
 
@@ -55,7 +58,9 @@ the source — flagged here rather than glossed over.
 
 - **Score a claim** — a curated subset of the modelled fields (sidebar), a calibrated
   fraud probability with an animated gauge, a cost- and capacity-aware decision, and a
-  short explanation of why.
+  plain-English explanation of why (a deterministic, template-filled sentence — the same
+  numbers as the technical view, relabelled for a claims handler, not a data scientist;
+  the technical chart is still there, tucked in an expander for audit).
 - **Model & data** — the dataset as loaded (previewable and downloadable as CSV),
   model comparison, calibration before/after, the cost-based threshold curve, and
   permutation importance — all as interactive Plotly charts.

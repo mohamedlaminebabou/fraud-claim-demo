@@ -199,3 +199,135 @@ def local_explanation(x_row: pd.Series, train_means: pd.Series, train_stds: pd.S
     z = (x_row - train_means) / train_stds
     contrib = z * importance.reindex(x_row.index).fillna(0)
     return contrib.sort_values(key=lambda s: s.abs(), ascending=False).head(top_n)
+
+
+# ----------------------------------------------------------------------------
+# Plain-language explanation
+# ----------------------------------------------------------------------------
+# Direct response to reviewer feedback: a claims handler cannot act on a bar
+# chart of feature contributions. This layer translates the SAME numbers
+# (local_explanation above) into a template-filled sentence — deterministic,
+# not LLM-generated, so every word traces back to a real, auditable number.
+# No invention, no paraphrase risk: it fills blanks in fixed sentence shapes.
+
+NUMERIC_LABELS = {
+    "months_as_customer": "how long they've been a customer",
+    "age": "the policyholder's age",
+    "policy_deductable": "the policy's deductible",
+    "policy_annual_premium": "the annual premium",
+    "umbrella_limit": "the umbrella coverage limit",
+    "capital_gains": "reported capital gains",
+    "capital_loss": "reported capital losses",
+    "incident_hour_of_the_day": "the time of day of the incident",
+    "number_of_vehicles_involved": "the number of vehicles involved",
+    "bodily_injuries": "the number of bodily injuries reported",
+    "witnesses": "the number of witnesses",
+    "total_claim_amount": "the total claim amount",
+    "injury_claim": "the injury claim amount",
+    "property_claim": "the property claim amount",
+    "vehicle_claim": "the vehicle claim amount",
+}
+MONEY_COLUMNS = {
+    "policy_annual_premium", "umbrella_limit", "capital_gains", "capital_loss",
+    "total_claim_amount", "injury_claim", "property_claim", "vehicle_claim",
+}
+CATEGORICAL_LABELS = {
+    "insured_sex": "the policyholder's sex",
+    "insured_education_level": "the policyholder's education level",
+    "insured_occupation": "the policyholder's occupation",
+    "insured_relationship": "the policyholder's relationship status",
+    "policy_state": "the policy's state",
+    "policy_csl": "the policy's combined single limit",
+    "incident_type": "the incident type",
+    "collision_type": "the collision type",
+    "incident_severity": "the incident severity",
+    "authorities_contacted": "the authorities contacted",
+    "incident_state": "the incident's state",
+    "property_damage": "whether property damage was noted",
+    "police_report_available": "whether a police report is available",
+}
+
+
+def _fmt(value, is_money):
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if is_money:
+        return f"\u20ac{value:,.0f}"
+    if value == int(value):
+        return f"{int(value)}"
+    return f"{value:.1f}"
+
+
+def _humanize_column(col: str):
+    """Return (label, kind) for a raw or one-hot feature column name."""
+    if col in NUMERIC_LABELS:
+        return NUMERIC_LABELS[col], "numeric"
+    for cat, label in CATEGORICAL_LABELS.items():
+        prefix = cat + "_"
+        if col.startswith(prefix):
+            return label, "categorical:" + col[len(prefix):]
+    return col.replace("_", " "), "numeric"
+
+
+def _reason_phrase(col: str, x_row: pd.Series, train_means: pd.Series) -> str:
+    label, kind = _humanize_column(col)
+    if kind == "numeric":
+        is_money = col in MONEY_COLUMNS
+        value = _fmt(x_row[col], is_money)
+        avg = _fmt(train_means.get(col, x_row[col]), is_money)
+        direction = "higher" if x_row[col] > train_means.get(col, x_row[col]) else "lower"
+        return f"{label} ({value}) is {direction} than typical (average {avg})"
+    category_value = kind.split(":", 1)[1]
+    return f"{label} is \u2018{category_value}\u2019"
+
+
+def plain_language_explanation(x_row: pd.Series, train_means: pd.Series, train_stds: pd.Series,
+                                importance: pd.Series, is_flagged: bool, top_n: int = 3) -> str:
+    """Deterministic, template-filled, plain-English explanation of a single
+    claim's score — the layer a claims handler can actually act on. Reuses
+    the exact same contribution numbers as local_explanation(); nothing is
+    invented, only relabelled, contextualised, and assembled into sentences.
+    """
+    z = (x_row - train_means) / train_stds
+    contrib = (z * importance.reindex(x_row.index).fillna(0)).dropna()
+
+    # A one-hot dummy column only makes sense to cite as a reason when it is
+    # actually active for this claim (value 1) — a dummy at 0 describes a
+    # category that does NOT apply, and naming it would misstate the claim
+    # (e.g. citing "property_damage_YES" when the real answer is NO).
+    # Numeric columns have no such restriction: they always describe a real,
+    # reportable value.
+    def is_reportable(col):
+        if col in NUMERIC_LABELS:
+            return True
+        for cat in CATEGORICAL_LABELS:
+            if col.startswith(cat + "_"):
+                return x_row[col] == 1
+        return True
+
+    contrib = contrib[[c for c in contrib.index if is_reportable(c)]]
+
+    up = contrib[contrib > 0].sort_values(ascending=False).head(top_n)
+    down = contrib[contrib < 0].sort_values().head(1)  # single strongest mitigating factor
+
+    up_phrases = [_reason_phrase(c, x_row, train_means) for c in up.index]
+    down_phrases = [_reason_phrase(c, x_row, train_means) for c in down.index]
+
+    if is_flagged and up_phrases:
+        lead = "This claim is flagged for manual review."
+        if len(up_phrases) == 1:
+            body = f" Main reason: {up_phrases[0]}."
+        else:
+            body = f" Main reason: {up_phrases[0]}. Additional reasons: " + "; ".join(up_phrases[1:]) + "."
+        tail = f" One factor works in the claim's favor: {down_phrases[0]}." if down_phrases else ""
+        return lead + body + tail
+
+    if not is_flagged and up_phrases:
+        lead = "This claim does not meet the threshold for manual review."
+        body = f" A couple of factors are slightly elevated ({'; '.join(up_phrases[:2])}), but not enough on their own to justify review."
+        return lead + body
+
+    return ("This claim looks typical for this type of incident \u2014 no unusual "
+            "combination of factors was found.")
